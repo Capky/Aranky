@@ -21,7 +21,18 @@
   --fh:'Outfit',sans-serif; --fm:'JetBrains Mono',monospace;
 }
 *,*::before,*::after{margin:0;padding:0;box-sizing:border-box;}
-body{font-family:var(--fh);background:var(--bg);color:var(--text);min-height:100vh;overflow-x:hidden;display:flex;flex-direction:column;align-items:center;justify-content:center;touch-action:none;}
+body{
+  font-family:var(--fh);
+  background:var(--bg);
+  color:var(--text);
+  min-height:100vh;
+  overflow-x:hidden;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  touch-action:auto;
+}
 body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(rgba(108,99,255,.04) 1px,transparent 1px),linear-gradient(90deg,rgba(108,99,255,.04) 1px,transparent 1px);background-size:40px 40px;pointer-events:none;z-index:0;}
 
 /* HEADER */
@@ -1007,7 +1018,9 @@ function drawFrame(){
       ctx.save(); ctx.globalAlpha=alpha;
       const ey=p.y-PS-26-yOff;
       ctx.fillStyle='rgba(15,15,24,.85)';
-      ctx.beginPath(); ctx.roundRect(p.x-18,ey-19,36,25,7); ctx.fill();
+      ctx.beginPath();
+      ctx.rect(p.x-18, ey-19, 36, 25);
+      ctx.fill();
       ctx.strokeStyle='rgba(108,99,255,.5)'; ctx.lineWidth=1; ctx.stroke();
       ctx.font='15px serif'; ctx.textAlign='center';
       ctx.fillText(em.emoji,p.x,ey-1);

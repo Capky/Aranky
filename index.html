@@ -473,7 +473,12 @@ header {
 }
 
 /* GAME SCREEN */
-#game-screen { padding-top: 80px; gap: 16px; }
+#game-screen { 
+  padding-top: 80px; 
+  gap: 16px; 
+  justify-content: flex-start;
+  padding-bottom: 200px;
+}
 .game-hud {
   display: flex;
   justify-content: space-between;
@@ -698,6 +703,96 @@ header {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* JOYSTICK */
+.game-controls {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  z-index: 50;
+}
+.game-controls.active { display: flex; }
+
+.joystick-container {
+  display: flex;
+  gap: 32px;
+  align-items: center;
+}
+
+.joystick {
+  width: 100px;
+  height: 100px;
+  background: var(--surface);
+  border: 2px solid var(--border2);
+  border-radius: 50%;
+  position: relative;
+  touch-action: none;
+  cursor: grab;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.joystick:active { cursor: grabbing; }
+
+.joystick-knob {
+  width: 50px;
+  height: 50px;
+  background: linear-gradient(135deg, var(--accent), var(--cyan));
+  border-radius: 50%;
+  position: absolute;
+  pointer-events: none;
+  box-shadow: 0 0 20px var(--accent-glow);
+  transition: none;
+}
+
+.joystick-fire {
+  width: 70px;
+  height: 70px;
+  background: rgba(255,77,109,0.15);
+  border: 2px solid rgba(255,77,109,0.5);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.5rem;
+  cursor: pointer;
+  transition: all 0.1s;
+  user-select: none;
+  touch-action: none;
+}
+.joystick-fire:active {
+  background: rgba(255,77,109,0.3);
+  border-color: var(--red);
+  transform: scale(0.95);
+}
+
+.game-quit-btn {
+  background: rgba(255,77,109,0.2);
+  border: 1px solid rgba(255,77,109,0.5);
+  color: var(--red);
+  padding: 10px 20px;
+  border-radius: 8px;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.game-quit-btn:hover {
+  background: rgba(255,77,109,0.3);
+  border-color: var(--red);
+}
+
+.quit-votes {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text2);
+  text-align: center;
+}
+
 /* RESPONSIVE */
 @media (max-width: 700px) {
   .lobby-cards { flex-direction: column; align-items: center; }
@@ -708,6 +803,11 @@ header {
   .scoreboard { gap: 8px; }
   .score-card { min-width: 130px; padding: 6px 10px; }
   #game-canvas { max-width: 95vw; }
+  
+  .joystick-container {
+    flex-direction: column;
+    gap: 16px;
+  }
 }
 </style>
 </head>
@@ -825,6 +925,20 @@ header {
   </div>
 </div>
 
+<!-- GAME CONTROLS (Joystick + Fire + Quit) -->
+<div id="game-controls" class="game-controls">
+  <div class="joystick-container">
+    <div id="joystick" class="joystick">
+      <div class="joystick-knob"></div>
+    </div>
+    <div id="fire-btn" class="joystick-fire">🔥</div>
+  </div>
+  <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;justify-content:center;">
+    <button class="game-quit-btn" onclick="voteQuit()">Quitter Partie</button>
+    <div id="quit-votes" class="quit-votes"></div>
+  </div>
+</div>
+
 <!-- TOAST -->
 <div id="toast" class="toast"></div>
 
@@ -854,6 +968,12 @@ let timerInterval = null;
 let keys = {};
 let mousePos = { x: 0, y: 0 };
 let canvas, ctx;
+
+// Joystick state
+let joystickActive = false;
+let joystickX = 0;
+let joystickY = 0;
+let quitVotes = {};
 
 // ============ UTILS ============
 function genCode() {
@@ -957,6 +1077,7 @@ function handleHostData(peerId, data) {
     case 'join':
       const color = getRandomColor();
       players[peerId] = { name: data.name, color: color, score: 0, x: 0, y: 0, angle: 0, hp: 3, alive: true };
+      quitVotes[peerId] = false;
       broadcast({ type: 'player_list', players, roomCode });
       renderPlayers();
       updateOnlineCount();
@@ -984,6 +1105,12 @@ function handleHostData(peerId, data) {
     case 'leave':
       removePlayer(peerId);
       break;
+    case 'quit_vote':
+      quitVotes[peerId] = true;
+      broadcast({ type: 'quit_votes_update', votes: quitVotes });
+      updateQuitVotesUI();
+      checkQuitVotes();
+      break;
   }
 }
 
@@ -991,139 +1118,125 @@ function removePlayer(peerId) {
   const name = players[peerId]?.name || 'Joueur';
   delete players[peerId];
   delete connections[peerId];
+  delete quitVotes[peerId];
   broadcast({ type: 'player_list', players, roomCode });
   renderPlayers();
   updateOnlineCount();
   addChatMsg(null, name + ' a quitté.');
 }
 
+function checkQuitVotes() {
+  if (!gameRunning) return;
+  const playerIds = Object.keys(players);
+  const voteCount = Object.keys(quitVotes).filter(id => quitVotes[id]).length;
+  
+  if (playerIds.length > 0 && voteCount === playerIds.length) {
+    endGame();
+  }
+}
+
 function broadcast(data) {
   Object.values(connections).forEach(conn => {
-    try { conn.send(data); } catch(e) {}
+    if (conn.open) conn.send(data);
   });
 }
 
-// ============ CLIENT LOGIC ============
-function showJoinModal() {
+// ============ JOINING ROOM ============
+async function joinRoom() {
   myName = document.getElementById('nickname').value.trim();
   if (!myName) {
-    setStatus('lobby-status', 'Entre un pseudo d\'abord !', 'error');
+    setStatus('join-status', 'Entre un pseudo !', 'error');
     return;
   }
-  document.getElementById('join-modal').classList.add('active');
-  document.getElementById('room-code-input').value = '';
-  setStatus('join-status', '', '');
-  document.getElementById('room-code-input').focus();
-}
 
-function closeJoinModal() {
-  document.getElementById('join-modal').classList.remove('active');
-}
-
-async function joinRoom() {
   const code = document.getElementById('room-code-input').value.trim().toUpperCase();
   if (!code || code.length < 4) {
-    setStatus('join-status', 'Code invalide.', 'error');
+    setStatus('join-status', 'Code invalide !', 'error');
     return;
   }
-  roomCode = code;
+
   setStatus('join-status', 'Connexion...', '');
+  const peerId = 'cwarena-' + code;
 
   try {
-    await initPeer('cwarena-client-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6));
+    await initPeer(peerId + '-' + Math.random().toString(36).substr(2, 9));
   } catch (e) {
     setStatus('join-status', e.message, 'error');
     return;
   }
 
-  const hostPeerId = 'cwarena-' + roomCode;
-  const conn = peer.connect(hostPeerId, { reliable: true });
-
+  const conn = peer.connect(peerId);
+  
   conn.on('open', () => {
-    connections['host'] = conn;
-    isHost = false;
-    myColor = getRandomColor();
+    connections[peerId] = conn;
     conn.send({ type: 'join', name: myName });
-
-    conn.on('data', (data) => handleClientData(data));
+    
+    conn.on('data', (data) => handleGuestData(data));
     conn.on('close', () => {
-      showToast('Déconnecté du serveur.');
-      backToLobby();
+      showScreen('lobby-screen');
+      showToast('Déconnecté du serveur');
     });
 
     closeJoinModal();
+    roomCode = code;
+    isHost = false;
+    myColor = getRandomColor();
     document.getElementById('room-code-text').textContent = roomCode;
     document.getElementById('hud-room').textContent = roomCode;
+    updateOnlineCount();
     showScreen('room-screen');
-    addChatMsg(null, 'Connecté à la room ' + roomCode);
   });
 
-  conn.on('error', () => {
-    setStatus('join-status', 'Impossible de se connecter. Vérifie le code.', 'error');
+  conn.on('error', (err) => {
+    setStatus('join-status', 'Impossible de rejoindre: ' + err, 'error');
   });
-
-  setTimeout(() => {
-    if (!connections['host']) {
-      setStatus('join-status', 'Timeout — room introuvable.', 'error');
-    }
-  }, 8000);
 }
 
-function handleClientData(data) {
+function handleGuestData(data) {
   switch (data.type) {
     case 'player_list':
       players = data.players;
-      roomCode = data.roomCode;
+      quitVotes[myId] = false;
+      Object.keys(players).forEach(pid => {
+        if (!(pid in quitVotes)) quitVotes[pid] = false;
+      });
       renderPlayers();
       updateOnlineCount();
+      document.getElementById('player-count').textContent = Object.keys(players).length + '/8';
       break;
     case 'chat':
       addChatMsg(data.name, data.msg);
       break;
-    case 'game_start':
-      players = data.players;
-      startGameClient();
+    case 'start_game':
+      startGame();
       break;
-    case 'game_state':
-      players = data.players;
-      bullets = data.bullets || [];
-      gameTimer = data.timer;
-      break;
-    case 'game_over':
-      endGame(data.scores);
+    case 'quit_votes_update':
+      quitVotes = data.votes;
+      updateQuitVotesUI();
       break;
   }
 }
 
-// ============ ROOM UI ============
+// ============ ROOM LOGIC ============
+function copyRoomCode() {
+  navigator.clipboard.writeText(roomCode);
+  showToast('Code copié !');
+}
+
 function renderPlayers() {
   const list = document.getElementById('players-list');
-  const count = Object.keys(players).length;
-  document.getElementById('player-count').textContent = count + '/8';
-  document.getElementById('hud-players').textContent = count;
-  document.getElementById('online-count').textContent = count;
-
   list.innerHTML = '';
   Object.entries(players).forEach(([id, p]) => {
-    const isMe = (id === myId);
-    const isH = isHost && isMe;
-    const div = document.createElement('div');
-    div.className = 'player-item' + (isH ? ' host' : '');
-    div.innerHTML = `
-      <div class="player-avatar" style="background:${p.color}">${p.name.charAt(0).toUpperCase()}</div>
-      <span class="player-name">${p.name}${isMe ? ' (toi)' : ''}</span>
-      ${isH ? '<span class="player-badge badge-host">HOST</span>' : '<span class="player-badge badge-ready">PRÊT</span>'}
+    const item = document.createElement('div');
+    item.className = 'player-item' + (id === myId && isHost ? ' host' : '');
+    item.innerHTML = `
+      <div class="player-avatar" style="background:${p.color}">${p.name[0]}</div>
+      <div class="player-name">${p.name}</div>
+      ${id === myId && isHost ? '<span class="player-badge badge-host">HOST</span>' : ''}
     `;
-    list.appendChild(div);
+    list.appendChild(item);
   });
-}
-
-function updateOnlineCount() {
-  document.getElementById('online-count').textContent = Object.keys(players).length;
-}
-
-function copyRoomCode() {
-  navigator.clipboard.writeText(roomCode).then(() => showToast('Code copié !'));
+  document.getElementById('player-count').textContent = Object.keys(players).length + '/8';
 }
 
 function addChatMsg(author, msg) {
@@ -1133,7 +1246,7 @@ function addChatMsg(author, msg) {
   if (author) {
     div.innerHTML = `<span class="author">${author}:</span> ${msg}`;
   } else {
-    div.innerHTML = `<span class="sys">${msg}</span>`;
+    div.innerHTML = `<span class="sys">⚡ ${msg}</span>`;
   }
   chat.appendChild(div);
   chat.scrollTop = chat.scrollHeight;
@@ -1143,110 +1256,131 @@ function sendChat() {
   const input = document.getElementById('room-chat-input');
   const msg = input.value.trim();
   if (!msg) return;
-  input.value = '';
-
+  
+  addChatMsg(myName, msg);
+  
   if (isHost) {
-    addChatMsg(myName, msg);
-    broadcast({ type: 'chat', name: myName, msg });
+    const sender = players[myId];
+    if (sender) broadcast({ type: 'chat', name: sender.name, msg });
   } else {
-    connections['host']?.send({ type: 'chat', msg });
-    addChatMsg(myName, msg);
+    Object.values(connections).forEach(conn => {
+      if (conn.open) conn.send({ type: 'chat', msg });
+    });
   }
+  
+  input.value = '';
 }
 
 function leaveRoom() {
-  if (isHost) {
-    broadcast({ type: 'chat', name: '', msg: 'L\'hôte a fermé la room.' });
-  } else {
-    connections['host']?.send({ type: 'leave' });
-  }
-  backToLobby();
-}
-
-function backToLobby() {
-  stopGame();
-  Object.values(connections).forEach(c => { try { c.close(); } catch(e){} });
+  Object.values(connections).forEach(conn => {
+    if (conn.open) conn.send({ type: 'leave' });
+    conn.close();
+  });
   connections = {};
   players = {};
-  bullets = [];
-  if (peer) { peer.destroy(); peer = null; }
-  roomCode = '';
-  isHost = false;
-  document.getElementById('room-chat').innerHTML = '';
-  document.getElementById('start-btn').style.display = 'none';
-  document.getElementById('replay-btn').style.display = 'none';
+  quitVotes = {};
+  if (peer) peer.destroy();
+  peer = null;
   showScreen('lobby-screen');
-  setStatus('lobby-status', '', '');
 }
 
-// ============ GAME LOGIC ============
+function showJoinModal() {
+  document.getElementById('join-modal').classList.add('active');
+}
+
+function closeJoinModal() {
+  document.getElementById('join-modal').classList.remove('active');
+  document.getElementById('room-code-input').value = '';
+  setStatus('join-status', '', '');
+}
+
+// ============ GAME ============
 function startGame() {
-  if (!isHost) return;
-  const ids = Object.keys(players);
-  if (ids.length < 1) return;
+  if (isHost && Object.keys(players).< 2) {
+    showToast('Au moins 2 joueurs requis');
+    return;
+  }
 
-  ids.forEach((id, i) => {
-    const angle = (2 * Math.PI * i) / ids.length;
-    players[id].x = CANVAS_W / 2 + Math.cos(angle) * 150;
-    players[id].y = CANVAS_H / 2 + Math.sin(angle) * 150;
-    players[id].score = 0;
-    players[id].hp = 3;
-    players[id].alive = true;
-    players[id].angle = 0;
-  });
-  bullets = [];
+  gameRunning = true;
   gameTimer = GAME_DURATION;
+  bullets = [];
+  quitVotes = {};
+  Object.keys(players).forEach(pid => {
+    quitVotes[pid] = false;
+    players[pid].x = Math.random() * CANVAS_W;
+    players[pid].y = Math.random() * CANVAS_H;
+    players[pid].score = 0;
+    players[pid].hp = 3;
+    players[pid].alive = true;
+  });
 
-  broadcast({ type: 'game_start', players });
-  startGameClient();
+  canvas = document.getElementById('game-canvas');
+  ctx = canvas.getContext('2d');
 
-  gameInterval = setInterval(() => {
-    updateGameHost();
-    broadcast({ type: 'game_state', players, bullets, timer: gameTimer });
-  }, 1000 / 30);
+  showScreen('game-screen');
+  document.getElementById('game-controls').classList.add('active');
+
+  if (isHost) {
+    broadcast({ type: 'start_game' });
+    
+    gameInterval = setInterval(() => {
+      updateGame();
+      renderGame();
+      broadcastGameState();
+    }, 1000 / 60);
+  }
 
   timerInterval = setInterval(() => {
     gameTimer--;
+    updateTimer();
     if (gameTimer <= 0) {
-      const scores = Object.entries(players).map(([id, p]) => ({ name: p.name, score: p.score, color: p.color }));
-      scores.sort((a, b) => b.score - a.score);
-      broadcast({ type: 'game_over', scores });
-      endGame(scores);
+      endGame();
     }
   }, 1000);
 
-  gameRunning = true;
+  setupInputs();
 }
 
-function startGameClient() {
-  canvas = document.getElementById('game-canvas');
-  ctx = canvas.getContext('2d');
-  gameRunning = true;
-  showScreen('game-screen');
-  setupControls();
-  requestAnimationFrame(renderGame);
-}
-
-function stopGame() {
-  gameRunning = false;
-  if (gameInterval) { clearInterval(gameInterval); gameInterval = null; }
-  if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
-}
-
-function updateGameHost() {
+function updateGame() {
   if (!gameRunning) return;
 
-  // Move host player
+  // Move current player
   if (players[myId]) {
-    let dx = 0, dy = 0;
-    if (keys['w'] || keys['arrowup'] || keys['z']) dy -= MOVE_SPEED;
-    if (keys['s'] || keys['arrowdown']) dy += MOVE_SPEED;
-    if (keys['a'] || keys['arrowleft'] || keys['q']) dx -= MOVE_SPEED;
-    if (keys['d'] || keys['arrowright']) dx += MOVE_SPEED;
-    if (dx && dy) { dx *= 0.707; dy *= 0.707; }
-    players[myId].x = Math.max(PLAYER_SIZE, Math.min(CANVAS_W - PLAYER_SIZE, players[myId].x + dx));
-    players[myId].y = Math.max(PLAYER_SIZE, Math.min(CANVAS_H - PLAYER_SIZE, players[myId].y + dy));
-    players[myId].angle = Math.atan2(mousePos.y - players[myId].y, mousePos.x - players[myId].x);
+    const speed = 4;
+    let moved = false;
+
+    if (keys['w'] || keys['W'] || keys['ArrowUp']) { players[myId].y -= speed; moved = true; }
+    if (keys['s'] || keys['S'] || keys['ArrowDown']) { players[myId].y += speed; moved = true; }
+    if (keys['a'] || keys['A'] || keys['ArrowLeft']) { players[myId].x -= speed; moved = true; }
+    if (keys['d'] || keys['D'] || keys['ArrowRight']) { players[myId].x += speed; moved = true; }
+
+    // Joystick movement
+    if (joystickX !== 0 || joystickY !== 0) {
+      const mag = Math.hypot(joystickX, joystickY);
+      if (mag > 0) {
+        players[myId].x += (joystickX / mag) * speed;
+        players[myId].y += (joystickY / mag) * speed;
+        moved = true;
+      }
+    }
+
+    // Clamp position
+    players[myId].x = Math.max(PLAYER_SIZE, Math.min(CANVAS_W - PLAYER_SIZE, players[myId].x));
+    players[myId].y = Math.max(PLAYER_SIZE, Math.min(CANVAS_H - PLAYER_SIZE, players[myId].y));
+
+    // Angle towards mouse
+    const dx = mousePos.x - players[myId].x;
+    const dy = mousePos.y - players[myId].y;
+    players[myId].angle = Math.atan2(dy, dx);
+
+    if (moved && isHost) {
+      broadcast({
+        type: 'move',
+        x: players[myId].x,
+        y: players[myId].y,
+        angle: players[myId].angle
+      });
+    }
   }
 
   // Update bullets
@@ -1254,233 +1388,256 @@ function updateGameHost() {
     const b = bullets[i];
     b.x += b.vx;
     b.y += b.vy;
+
     if (b.x < 0 || b.x > CANVAS_W || b.y < 0 || b.y > CANVAS_H) {
       bullets.splice(i, 1);
       continue;
     }
-    // Collision
+
+    // Collision with players
     for (const [pid, p] of Object.entries(players)) {
       if (pid === b.owner || !p.alive) continue;
-      const dist = Math.sqrt((b.x - p.x) ** 2 + (b.y - p.y) ** 2);
-      if (dist < PLAYER_SIZE) {
+      const dist = Math.hypot(b.x - p.x, b.y - p.y);
+      if (dist < PLAYER_SIZE + BULLET_RADIUS) {
         p.hp--;
         if (p.hp <= 0) {
           p.alive = false;
-          if (players[b.owner]) players[b.owner].score += 10;
-          // Respawn after 2s
-          setTimeout(() => {
-            if (players[pid]) {
-              players[pid].alive = true;
-              players[pid].hp = 3;
-              players[pid].x = Math.random() * (CANVAS_W - 100) + 50;
-              players[pid].y = Math.random() * (CANVAS_H - 100) + 50;
-            }
-          }, 2000);
+          players[b.owner].score += 10;
         }
-        if (players[b.owner]) players[b.owner].score++;
         bullets.splice(i, 1);
         break;
       }
     }
   }
+
+  updateScoreboard();
 }
 
-function setupControls() {
-  document.addEventListener('keydown', (e) => {
-    keys[e.key.toLowerCase()] = true;
+function renderGame() {
+  ctx.fillStyle = '#0c0c12';
+  ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+
+  // Players
+  for (const p of Object.values(players)) {
+    if (!p.alive) continue;
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, PLAYER_SIZE, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.strokeStyle = p.color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y);
+    ctx.lineTo(p.x + Math.cos(p.angle) * 25, p.y + Math.sin(p.angle) * 25);
+    ctx.stroke();
+  }
+
+  // Bullets
+  for (const b of bullets) {
+    ctx.fillStyle = b.color;
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, BULLET_RADIUS, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function broadcastGameState() {
+  if (isHost) {
+    broadcast({ type: 'game_state', players, bullets });
+  }
+}
+
+function updateTimer() {
+  const mins = Math.floor(gameTimer / 60);
+  const secs = gameTimer % 60;
+  document.getElementById('hud-timer').textContent = mins + ':' + (secs < 10 ? '0' : '') + secs;
+}
+
+function updateScoreboard() {
+  const sorted = Object.entries(players)
+    .filter(([, p]) => p.alive)
+    .sort((a, b) => b[1].score - a[1].score);
+
+  const sb = document.getElementById('scoreboard');
+  sb.innerHTML = '';
+  sorted.forEach(([id, p]) => {
+    const card = document.createElement('div');
+    card.className = 'score-card';
+    card.innerHTML = `
+      <div class="avatar-sm" style="background:${p.color}">${p.name[0]}</div>
+      <div class="name">${p.name}</div>
+      <div class="score">${p.score}</div>
+    `;
+    sb.appendChild(card);
   });
-  document.addEventListener('keyup', (e) => {
-    keys[e.key.toLowerCase()] = false;
+
+  document.getElementById('hud-players').textContent = Object.values(players).filter(p => p.alive).length;
+}
+
+function endGame() {
+  gameRunning = false;
+  if (gameInterval) clearInterval(gameInterval);
+  if (timerInterval) clearInterval(timerInterval);
+  document.getElementById('game-controls').classList.remove('active');
+
+  const sorted = Object.entries(players).sort((a, b) => b[1].score - a[1].score);
+  const scores = document.getElementById('final-scores');
+  scores.innerHTML = '';
+
+  sorted.forEach(([id, p], idx) => {
+    const item = document.createElement('div');
+    item.className = 'final-score-item';
+    const rankClass = idx === 0 ? 'gold' : idx === 1 ? 'silver' : 'bronze';
+    const rankText = idx === 0 ? '🥇' : idx === 1 ? '🥈' : '🥉';
+    item.innerHTML = `
+      <div class="rank ${rankClass}">${rankText}</div>
+      <div class="final-name">${p.name}</div>
+      <div class="final-pts">${p.score}</div>
+    `;
+    scores.appendChild(item);
+  });
+
+  if (isHost) {
+    document.getElementById('replay-btn').style.display = 'flex';
+  }
+
+  showScreen('gameover-screen');
+}
+
+function backToLobby() {
+  Object.values(connections).forEach(conn => {
+    if (conn.open) conn.send({ type: 'leave' });
+    conn.close();
+  });
+  connections = {};
+  quitVotes = {};
+  if (peer) peer.destroy();
+  peer = null;
+  showScreen('lobby-screen');
+}
+
+// ============ INPUT / JOYSTICK ============
+function setupInputs() {
+  window.addEventListener('keydown', (e) => {
+    keys[e.key] = true;
+    if (e.key === ' ') {
+      e.preventDefault();
+      shoot();
+    }
+  });
+
+  window.addEventListener('keyup', (e) => {
+    keys[e.key] = false;
   });
 
   canvas.addEventListener('mousemove', (e) => {
     const rect = canvas.getBoundingClientRect();
-    const scaleX = CANVAS_W / rect.width;
-    const scaleY = CANVAS_H / rect.height;
-    mousePos.x = (e.clientX - rect.left) * scaleX;
-    mousePos.y = (e.clientY - rect.top) * scaleY;
+    mousePos.x = e.clientX - rect.left;
+    mousePos.y = e.clientY - rect.top;
   });
 
-  canvas.addEventListener('click', (e) => {
-    if (!gameRunning) return;
-    const me = players[myId];
-    if (!me || !me.alive) return;
-    const angle = Math.atan2(mousePos.y - me.y, mousePos.x - me.x);
-    const bullet = {
-      x: me.x + Math.cos(angle) * PLAYER_SIZE,
-      y: me.y + Math.sin(angle) * PLAYER_SIZE,
-      vx: Math.cos(angle) * BULLET_SPEED,
-      vy: Math.sin(angle) * BULLET_SPEED,
-      owner: myId,
-      color: me.color
-    };
-    if (isHost) {
-      bullets.push(bullet);
+  canvas.addEventListener('click', shoot);
+
+  // Joystick events
+  const joystick = document.getElementById('joystick');
+  const knob = joystick.querySelector('.joystick-knob');
+  const fireBtn = document.getElementById('fire-btn');
+
+  joystick.addEventListener('pointerdown', (e) => {
+    joystickActive = true;
+    updateJoystick(e);
+  });
+
+  document.addEventListener('pointermove', (e) => {
+    if (joystickActive) updateJoystick(e);
+  });
+
+  document.addEventListener('pointerup', () => {
+    joystickActive = false;
+    joystickX = 0;
+    joystickY = 0;
+    knob.style.transform = 'translate(0, 0)';
+  });
+
+  fireBtn.addEventListener('pointerdown', () => {
+    shoot();
+  });
+
+  function updateJoystick(e) {
+    const rect = joystick.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const px = e.clientX - cx;
+    const py = e.clientY - cy;
+    const radius = rect.width / 2 - 10;
+    const dist = Math.hypot(px, py);
+    
+    if (dist > radius) {
+      joystickX = (px / dist) * radius;
+      joystickY = (py / dist) * radius;
     } else {
-      connections['host']?.send({ type: 'shoot', x: bullet.x, y: bullet.y, vx: bullet.vx, vy: bullet.vy });
+      joystickX = px;
+      joystickY = py;
     }
-  });
+    
+    knob.style.transform = `translate(calc(-50% + ${joystickX}px), calc(-50% + ${joystickY}px))`;
+  }
 }
 
-// ============ RENDER ============
-function renderGame() {
-  if (!gameRunning) return;
+function shoot() {
+  if (!gameRunning || !players[myId]) return;
 
-  // Client movement
-  if (!isHost && players[myId]) {
-    let dx = 0, dy = 0;
-    if (keys['w'] || keys['arrowup'] || keys['z']) dy -= MOVE_SPEED;
-    if (keys['s'] || keys['arrowdown']) dy += MOVE_SPEED;
-    if (keys['a'] || keys['arrowleft'] || keys['q']) dx -= MOVE_SPEED;
-    if (keys['d'] || keys['arrowright']) dx += MOVE_SPEED;
-    if (dx && dy) { dx *= 0.707; dy *= 0.707; }
-    players[myId].x = Math.max(PLAYER_SIZE, Math.min(CANVAS_W - PLAYER_SIZE, players[myId].x + dx));
-    players[myId].y = Math.max(PLAYER_SIZE, Math.min(CANVAS_H - PLAYER_SIZE, players[myId].y + dy));
-    players[myId].angle = Math.atan2(mousePos.y - players[myId].y, mousePos.x - players[myId].x);
-    connections['host']?.send({ type: 'move', x: players[myId].x, y: players[myId].y, angle: players[myId].angle });
-  }
-
-  ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
-
-  // Background grid
-  ctx.strokeStyle = 'rgba(108,99,255,0.06)';
-  ctx.lineWidth = 1;
-  for (let x = 0; x < CANVAS_W; x += 40) {
-    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, CANVAS_H); ctx.stroke();
-  }
-  for (let y = 0; y < CANVAS_H; y += 40) {
-    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(CANVAS_W, y); ctx.stroke();
-  }
-
-  // Bullets
-  bullets.forEach(b => {
-    ctx.beginPath();
-    ctx.arc(b.x, b.y, BULLET_RADIUS, 0, Math.PI * 2);
-    ctx.fillStyle = b.color;
-    ctx.shadowColor = b.color;
-    ctx.shadowBlur = 8;
-    ctx.fill();
-    ctx.shadowBlur = 0;
-  });
-
-  // Players
-  Object.entries(players).forEach(([id, p]) => {
-    if (!p.alive) return;
-
-    // Body
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, PLAYER_SIZE, 0, Math.PI * 2);
-    ctx.fillStyle = p.color;
-    ctx.shadowColor = p.color;
-    ctx.shadowBlur = 12;
-    ctx.fill();
-    ctx.shadowBlur = 0;
-
-    // Outline
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, PLAYER_SIZE + 2, 0, Math.PI * 2);
-    ctx.strokeStyle = 'rgba(255,255,255,0.2)';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-
-    // Gun direction
-    const gunLen = PLAYER_SIZE + 10;
-    ctx.beginPath();
-    ctx.moveTo(p.x + Math.cos(p.angle) * PLAYER_SIZE * 0.5, p.y + Math.sin(p.angle) * PLAYER_SIZE * 0.5);
-    ctx.lineTo(p.x + Math.cos(p.angle) * gunLen, p.y + Math.sin(p.angle) * gunLen);
-    ctx.strokeStyle = p.color;
-    ctx.lineWidth = 4;
-    ctx.lineCap = 'round';
-    ctx.stroke();
-
-    // Name
-    ctx.fillStyle = '#fff';
-    ctx.font = '600 11px Outfit, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText(p.name, p.x, p.y - PLAYER_SIZE - 10);
-
-    // HP bar
-    const hpW = 30;
-    const hpH = 4;
-    const hpX = p.x - hpW / 2;
-    const hpY = p.y - PLAYER_SIZE - 6;
-    ctx.fillStyle = 'rgba(255,255,255,0.1)';
-    ctx.fillRect(hpX, hpY, hpW, hpH);
-    const hpRatio = Math.max(0, p.hp / 3);
-    ctx.fillStyle = hpRatio > 0.5 ? '#00f593' : hpRatio > 0.25 ? '#ffc947' : '#ff4d6d';
-    ctx.fillRect(hpX, hpY, hpW * hpRatio, hpH);
-  });
-
-  // Crosshair
-  ctx.strokeStyle = 'rgba(255,255,255,0.5)';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.arc(mousePos.x, mousePos.y, 12, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(mousePos.x - 16, mousePos.y);
-  ctx.lineTo(mousePos.x - 8, mousePos.y);
-  ctx.moveTo(mousePos.x + 8, mousePos.y);
-  ctx.lineTo(mousePos.x + 16, mousePos.y);
-  ctx.moveTo(mousePos.x, mousePos.y - 16);
-  ctx.lineTo(mousePos.x, mousePos.y - 8);
-  ctx.moveTo(mousePos.x, mousePos.y + 8);
-  ctx.lineTo(mousePos.x, mousePos.y + 16);
-  ctx.stroke();
-
-  // Timer
-  const mins = Math.floor(gameTimer / 60);
-  const secs = gameTimer % 60;
-  document.getElementById('hud-timer').textContent = mins + ':' + String(secs).padStart(2, '0');
-
-  // Scoreboard
-  updateScoreboard();
-
-  requestAnimationFrame(renderGame);
-}
-
-function updateScoreboard() {
-  const board = document.getElementById('scoreboard');
-  const sorted = Object.entries(players).sort((a, b) => b[1].score - a[1].score);
-  board.innerHTML = sorted.map(([id, p]) => `
-    <div class="score-card">
-      <div class="avatar-sm" style="background:${p.color}">${p.name.charAt(0).toUpperCase()}</div>
-      <span class="name">${p.name}</span>
-      <span class="score">${p.score}</span>
-    </div>
-  `).join('');
-}
-
-function endGame(scores) {
-  stopGame();
-  showScreen('gameover-screen');
-
-  const ranks = ['gold', 'silver', 'bronze'];
-  const medals = ['🥇', '🥈', '🥉'];
-  const container = document.getElementById('final-scores');
-  container.innerHTML = scores.map((s, i) => `
-    <div class="final-score-item">
-      <div class="rank ${ranks[i] || ''}">${medals[i] || (i + 1)}</div>
-      <div class="player-avatar" style="background:${s.color};width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;color:#fff">${s.name.charAt(0).toUpperCase()}</div>
-      <span class="final-name">${s.name}</span>
-      <span class="final-pts">${s.score} pts</span>
-    </div>
-  `).join('');
+  const p = players[myId];
+  const bullet = {
+    x: p.x + Math.cos(p.angle) * PLAYER_SIZE,
+    y: p.y + Math.sin(p.angle) * PLAYER_SIZE,
+    vx: Math.cos(p.angle) * BULLET_SPEED,
+    vy: Math.sin(p.angle) * BULLET_SPEED
+  };
 
   if (isHost) {
-    document.getElementById('replay-btn').style.display = '';
+    bullets.push({ ...bullet, owner: myId, color: p.color });
+    broadcast({ type: 'shoot', ...bullet });
+  } else {
+    Object.values(connections).forEach(conn => {
+      if (conn.open) conn.send({ type: 'shoot', ...bullet });
+    });
   }
+}
+
+function voteQuit() {
+  quitVotes[myId] = true;
+
+  if (isHost) {
+    checkQuitVotes();
+    broadcast({ type: 'quit_votes_update', votes: quitVotes });
+  } else {
+    Object.values(connections).forEach(conn => {
+      if (conn.open) conn.send({ type: 'quit_vote' });
+    });
+  }
+
+  updateQuitVotesUI();
+}
+
+function updateQuitVotesUI() {
+  const playerIds = Object.keys(players);
+  const voteCount = Object.keys(quitVotes).filter(id => quitVotes[id]).length;
+  const votesEl = document.getElementById('quit-votes');
+  votesEl.textContent = `${voteCount}/${playerIds.length} votes`;
+}
+
+// ============ ONLINE COUNT ============
+function updateOnlineCount() {
+  document.getElementById('online-count').textContent = Object.keys(players).length;
 }
 
 // ============ INIT ============
-document.getElementById('nickname').addEventListener('input', function() {
-  this.value = this.value.replace(/[^a-zA-Z0-9_\-àâäéèêëïîôùûüÿçÀÂÄÉÈÊËÏÎÔÙÛÜŸÇ ]/g, '');
-});
-
-document.getElementById('room-code-input').addEventListener('input', function() {
-  this.value = this.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+document.addEventListener('DOMContentLoaded', () => {
+  canvas = document.getElementById('game-canvas');
+  ctx = canvas.getContext('2d');
 });
 </script>
-
 </body>
 </html>
